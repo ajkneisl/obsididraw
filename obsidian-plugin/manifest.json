@@ -1,0 +1,9 @@
+{
+  "id": "obsididraw",
+  "name": "Obsididraw",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "View and export handwritten .draw drawings and annotated PDFs made with the Obsididraw app.",
+  "author": "Obsididraw",
+  "isDesktopOnly": false
+}

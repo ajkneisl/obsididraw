@@ -1,0 +1,21 @@
+{
+  "name": "obsidian-obsididraw",
+  "version": "0.1.0",
+  "description": "Obsidian viewer for .obsididraw drawings",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit && node esbuild.config.mjs production"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "obsidian": "^1.14.4",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1"
+  }
+}
