@@ -174,6 +174,9 @@ final class VaultStore {
                 var file = try DrawingFile.decode(CoordinatedFile.read(newAnnotations))
                 file.pdf = destination.lastPathComponent
                 try CoordinatedFile.write(try file.encoded(), to: newAnnotations)
+            } else {
+                // Nothing drawn yet, but the open editor must create its file under the new name.
+                activeSession?.relocate(from: oldAnnotations, to: VaultItem.annotationURL(forPDF: destination))
             }
         }
         await refresh()

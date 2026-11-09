@@ -20,6 +20,7 @@
 
 .obsididraw-pdf-page,
 .obsididraw-pdf-page canvas,
+.obsididraw-template,
 .obsididraw-ink {
 	position: absolute;
 	inset: 0;

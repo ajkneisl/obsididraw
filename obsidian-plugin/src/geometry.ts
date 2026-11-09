@@ -2,10 +2,28 @@
 
 import { DrawingDocument, DrawingPage, DrawingStroke, isInfinite } from "./format";
 
-/** Curve samples per B-spline segment. */
-const STEPS = 4;
-/** Segments used to approximate each round end cap. */
-const CAP_SEGMENTS = 8;
+/** Target distance between curve samples, in points, and the most samples per spline segment. */
+const SAMPLE_SPACING = 0.25;
+const MAX_STEPS = 32;
+/** How far a simplified outline may stray from the true curve, in points. */
+const TOLERANCE = 0.02;
+const MAX_RADIUS_DRIFT = 0.04;
+const MAX_RUN = 32;
+/** Radius floor, so ink written while zoomed in still shows up as a line. */
+const MIN_RADIUS = 0.2;
+/**
+ * A point's stored size isn't the width PencilKit draws. The solid width to draw instead is
+ * scale × (size − offset). See docs/FORMAT.md. Unlisted inks render like `pen`.
+ */
+const INK_WIDTH: Record<string, { scale: number; offset: number }> = {
+	pen: { scale: 2, offset: 2 },
+	monoline: { scale: 2, offset: 2 },
+	fountainPen: { scale: 1, offset: 2 },
+	pencil: { scale: 1, offset: 0 },
+	crayon: { scale: 1, offset: 0 },
+	watercolor: { scale: 1, offset: 0 },
+	marker: { scale: 1, offset: 0 },
+};
 /** Blank space kept around the content of infinite drawings. */
 export const PADDING = 16;
 
@@ -28,8 +46,8 @@ export interface Bounds {
 }
 
 export interface StrokeShape {
-	/** Closed outline polygon in page coordinates. */
-	polygon: Point[];
+	/** Closed, consistently wound polygons in page coordinates, to fill together with a nonzero rule. */
+	polygons: Point[][];
 	color: string;
 	alpha: number;
 	ink: string;
@@ -49,13 +67,13 @@ export function apply(m: Matrix, [x, y]: Point): Point {
 
 /** Converts a stroke into a filled shape in page coordinates. */
 export function strokeShape(stroke: DrawingStroke): StrokeShape | null {
-	const samples = sampleStroke(stroke.points);
+	const samples = sampleStroke(stroke.points, INK_WIDTH[stroke.ink] ?? INK_WIDTH.pen);
 	if (samples.length === 0) return null;
 	const matrix = strokeMatrix(stroke);
 	const { color, alpha } = parseColor(stroke.color);
 	const opacity = samples.reduce((sum, s) => sum + s.opacity, 0) / samples.length;
 	return {
-		polygon: outlinePolygon(samples).map((p) => apply(matrix, p)),
+		polygons: strokePolygons(samples).map((polygon) => polygon.map((p) => apply(matrix, p))),
 		color,
 		alpha: alpha * opacity,
 		ink: stroke.ink,
@@ -67,13 +85,13 @@ export function strokeShape(stroke: DrawingStroke): StrokeShape | null {
  * PencilKit stores strokes as uniform cubic B-spline control points. Evaluate the spline
  * (clamped by repeating the end points) to get a smooth centerline with per-sample widths.
  */
-function sampleStroke(points: number[][]): Sample[] {
+function sampleStroke(points: number[][], ink: { scale: number; offset: number }): Sample[] {
 	const controls: Sample[] = points
 		.filter((p) => p.length >= 2)
 		.map((p) => ({
 			x: p[0],
 			y: p[1],
-			r: ((p[3] ?? 2) + (p[4] ?? p[3] ?? 2)) / 4,
+			r: Math.max((ink.scale * (((p[3] ?? 2) + (p[4] ?? p[3] ?? 2)) / 2 - ink.offset)) / 2, MIN_RADIUS),
 			opacity: p[5] ?? 1,
 		}));
 	if (controls.length < 3) return controls;
@@ -83,8 +101,10 @@ function sampleStroke(points: number[][]): Sample[] {
 	const c = [first, first, ...controls, last, last];
 	const out: Sample[] = [];
 	for (let i = 0; i + 3 < c.length; i++) {
-		for (let s = 0; s < STEPS; s++) {
-			const t = s / STEPS;
+		const span = Math.hypot(c[i + 2].x - c[i + 1].x, c[i + 2].y - c[i + 1].y);
+		const steps = Math.min(Math.max(Math.ceil(span / SAMPLE_SPACING), 2), MAX_STEPS);
+		for (let s = 0; s < steps; s++) {
+			const t = s / steps;
 			const t2 = t * t;
 			const t3 = t2 * t;
 			const b0 = (1 - 3 * t + 3 * t2 - t3) / 6;
@@ -99,59 +119,71 @@ function sampleStroke(points: number[][]): Sample[] {
 	return out;
 }
 
-/** Offsets the centerline by the radius on each side, joined by round caps. */
-function outlinePolygon(samples: Sample[]): Point[] {
-	const arc = (cx: number, cy: number, r: number, from: number, segments: number): Point[] =>
-		Array.from({ length: segments + 1 }, (_, k) => {
-			const a = from - (Math.PI * k) / segments;
-			return [cx + Math.cos(a) * r, cy + Math.sin(a) * r];
-		});
-
-	if (samples.length === 1) {
-		const { x, y, r } = samples[0];
-		return arc(x, y, r, 0, CAP_SEGMENTS * 2).slice(0, -1).concat(arc(x, y, r, Math.PI, CAP_SEGMENTS * 2).slice(0, -1));
-	}
-
-	const normals: Point[] = [];
-	let nx = 0;
-	let ny = 1;
-	for (let i = 0; i < samples.length; i++) {
-		const prev = samples[Math.max(i - 1, 0)];
-		const next = samples[Math.min(i + 1, samples.length - 1)];
-		const dx = next.x - prev.x;
-		const dy = next.y - prev.y;
-		const len = Math.hypot(dx, dy);
-		if (len > 1e-6) {
-			nx = -dy / len;
-			ny = dx / len;
+/** Drops samples that a straight chord and constant width would reproduce within TOLERANCE. */
+function simplify(samples: Sample[]): Sample[] {
+	if (samples.length < 3) return samples;
+	const kept = [samples[0]];
+	let run = 0;
+	let turn = 0;
+	for (let i = 1; i < samples.length - 1; i++) {
+		const [a, s, next] = [samples[i - 1], samples[i], samples[i + 1]];
+		const [ux, uy, vx, vy] = [s.x - a.x, s.y - a.y, next.x - s.x, next.y - s.y];
+		run += Math.hypot(ux, uy);
+		turn += Math.abs(Math.atan2(ux * vy - uy * vx, ux * vx + uy * vy));
+		// A run of length L turning by T strays from its chord by about L·T/8.
+		if (run * turn > TOLERANCE * 8 || run > MAX_RUN || Math.abs(s.r - kept[kept.length - 1].r) > MAX_RADIUS_DRIFT) {
+			kept.push(s);
+			run = 0;
+			turn = 0;
 		}
-		normals.push([nx, ny]);
 	}
-
-	const left = samples.map(({ x, y, r }, i): Point => [x + normals[i][0] * r, y + normals[i][1] * r]);
-	const right = samples.map(({ x, y, r }, i): Point => [x - normals[i][0] * r, y - normals[i][1] * r]);
-	const end = samples[samples.length - 1];
-	const start = samples[0];
-	const endAngle = Math.atan2(normals[normals.length - 1][1], normals[normals.length - 1][0]);
-	const startAngle = Math.atan2(normals[0][1], normals[0][0]) + Math.PI;
-
-	return [
-		...left,
-		...arc(end.x, end.y, end.r, endAngle, CAP_SEGMENTS).slice(1, -1),
-		...right.reverse(),
-		...arc(start.x, start.y, start.r, startAngle, CAP_SEGMENTS).slice(1, -1),
-	];
+	kept.push(samples[samples.length - 1]);
+	return kept;
 }
 
-export function polygonPath(polygon: Point[]): string {
-	return polygon.map(([x, y], i) => `${i === 0 ? "M" : "L"}${fmt(x)} ${fmt(y)}`).join("") + "Z";
+/** A circle, wound the same way as the quads in `strokePolygons`. */
+function disk({ x, y, r }: Sample): Point[] {
+	const segments = Math.min(Math.max(Math.ceil(Math.PI * Math.sqrt(r / (2 * TOLERANCE))), 8), 64);
+	return Array.from({ length: segments }, (_, k): Point => {
+		const a = (-2 * Math.PI * k) / segments;
+		return [x + Math.cos(a) * r, y + Math.sin(a) * r];
+	});
+}
+
+/**
+ * The stroke as a union of disks at each sample and a quad between each pair. All pieces wind the
+ * same way, so a nonzero fill merges them. A single offset outline can't do this: on curves tighter
+ * than the pen is wide it folds over itself and leaves holes.
+ */
+function strokePolygons(samples: Sample[]): Point[][] {
+	const kept = simplify(samples);
+	const polygons = [disk(kept[0])];
+	for (let i = 1; i < kept.length; i++) {
+		const [a, b] = [kept[i - 1], kept[i]];
+		const len = Math.hypot(b.x - a.x, b.y - a.y);
+		if (len > 1e-6) {
+			const [nx, ny] = [-(b.y - a.y) / len, (b.x - a.x) / len];
+			polygons.push([
+				[a.x + nx * a.r, a.y + ny * a.r],
+				[b.x + nx * b.r, b.y + ny * b.r],
+				[b.x - nx * b.r, b.y - ny * b.r],
+				[a.x - nx * a.r, a.y - ny * a.r],
+			]);
+		}
+		polygons.push(disk(b));
+	}
+	return polygons;
+}
+
+export function polygonsPath(polygons: Point[][]): string {
+	return polygons.map((polygon) => polygon.map(([x, y], i) => `${i === 0 ? "M" : "L"}${fmt(x)} ${fmt(y)}`).join("") + "Z").join("");
 }
 
 export function shapeBounds(shapes: StrokeShape[]): Bounds | null {
 	if (shapes.length === 0) return null;
 	const b: Bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
 	for (const shape of shapes) {
-		for (const [x, y] of shape.polygon) {
+		for (const [x, y] of shape.polygons.flat()) {
 			b.minX = Math.min(b.minX, x);
 			b.minY = Math.min(b.minY, y);
 			b.maxX = Math.max(b.maxX, x);

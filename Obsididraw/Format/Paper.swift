@@ -50,6 +50,8 @@ nonisolated struct Paper: Codable, Equatable {
     /// Page height in points. Unused for infinite paper.
     var height: Double
     var color: Colors
+    /// The pattern behind the ink. Nil means blank; ignored on PDFs.
+    var template: PageTemplate?
 
     static let infiniteWidth = 800.0
 

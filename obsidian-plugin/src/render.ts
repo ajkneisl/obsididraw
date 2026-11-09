@@ -1,5 +1,6 @@
 import { DrawingDocument, isInfinite } from "./format";
-import { PADDING, StrokeShape, fmt, pageSize, parseColor, polygonPath, shapeBounds, strokeShape } from "./geometry";
+import { TEMPLATE_OPACITY, templatePath } from "./template";
+import { PADDING, StrokeShape, fmt, pageSize, parseColor, polygonsPath, shapeBounds, strokeShape } from "./geometry";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -66,11 +67,23 @@ export function renderDrawing(container: HTMLElement, doc: DrawingDocument, opti
 			observer?.observe(pdfEl);
 		}
 
+		// Separate from the ink, which is inverted as a whole in dark themes.
+		const pattern = doc.pdf ? "" : templatePath(doc.paper.template, page.width, viewBox[1] + viewBox[3], isInfinite(doc));
+		if (pattern) {
+			const templateSvg = document.createElementNS(SVG_NS, "svg");
+			templateSvg.addClass("obsididraw-template");
+			templateSvg.setAttribute("viewBox", viewBox.map(fmt).join(" "));
+			templateSvg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+			templateSvg.appendChild(svgEl("path", { d: pattern, fill: dark ? "#ffffff" : "#000000", "fill-opacity": String(TEMPLATE_OPACITY) }));
+			pageEl.appendChild(templateSvg);
+		}
+
 		const svg = document.createElementNS(SVG_NS, "svg");
 		svg.addClass("obsididraw-ink");
 		svg.toggleClass("is-inverted", dark);
 		svg.setAttribute("viewBox", viewBox.map(fmt).join(" "));
 		svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+		svg.setAttribute("shape-rendering", "geometricPrecision");
 		const defs = svg.appendChild(svgEl("defs", {}));
 		for (const shape of shapes) svg.appendChild(renderShape(shape, defs));
 		pageEl.appendChild(svg);
@@ -79,7 +92,7 @@ export function renderDrawing(container: HTMLElement, doc: DrawingDocument, opti
 
 function renderShape(shape: StrokeShape, defs: SVGDefsElement): SVGPathElement {
 	const path = svgEl("path", {
-		d: polygonPath(shape.polygon),
+		d: polygonsPath(shape.polygons),
 		fill: shape.color,
 		"fill-opacity": fmt(shape.alpha),
 	});

@@ -179,6 +179,30 @@ nonisolated enum InkName {
     }
 }
 
+/// A point's stored `size` isn't the width PencilKit draws, so these convert between the two,
+/// as measured from PencilKit's own rendering. Documented in `docs/FORMAT.md`.
+nonisolated enum InkWidth {
+    /// The width to draw `ink` as a solid vector shape.
+    static func solid(size: CGFloat, ink: PKInk.InkType) -> CGFloat {
+        switch ink {
+        case .fountainPen: max(size - 2, 0)
+        // Textured inks span about twice `size`, but their speckle only covers about half of that.
+        case .pencil, .crayon, .watercolor, .marker: size
+        default: max(2 * (size - 2), 0)
+        }
+    }
+
+    /// The `size` that makes PencilKit draw `ink` `width` points wide.
+    static func size(forWidth width: CGFloat, ink: PKInk.InkType) -> CGFloat {
+        switch ink {
+        case .fountainPen: width + 2
+        case .pencil, .crayon, .watercolor: width / 2
+        case .marker: width
+        default: width / 2 + 2
+        }
+    }
+}
+
 // MARK: - Colors
 
 nonisolated extension UIColor {

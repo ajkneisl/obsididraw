@@ -27,6 +27,16 @@ struct PaperForm: View {
             }
         }
 
+        if !isPDF {
+            Section("Template") {
+                Picker("Template", selection: Binding(get: { paper.template ?? .blank }, set: { paper.template = $0 })) {
+                    ForEach(PageTemplate.allCases) { template in
+                        Text(template.title).tag(template)
+                    }
+                }
+            }
+        }
+
         Section {
             ColorPicker("Light Mode", selection: color(\.light), supportsOpacity: false)
             if !isPDF {

@@ -1,5 +1,6 @@
 import PencilKit
 import SwiftUI
+import UIKit.UIGestureRecognizerSubclass
 
 /// The PencilKit canvas with page backgrounds drawn behind the ink, fit to the window's width.
 struct CanvasView: UIViewRepresentable {
@@ -7,7 +8,11 @@ struct CanvasView: UIViewRepresentable {
     /// Bumped whenever `document.drawing` is replaced from outside the canvas (page setup changes).
     let revision: Int
     var allowsFingerDrawing: Bool
+    /// While set, dragging draws this shape instead of freehand ink.
+    var shapeKind: ShapeKind?
     var onChange: (PKDrawing) -> Void
+    /// Called when a touch or Pencil stroke on the canvas lifts.
+    var onTouch: () -> Void
     /// Called when the user pulls past the last page; nil when pages can't be added.
     var onAddPage: (() -> Void)?
 
@@ -22,29 +27,29 @@ struct CanvasView: UIViewRepresentable {
         canvas.delegate = context.coordinator
         canvas.drawingPolicy = drawingPolicy
         canvas.onAddPage = onAddPage
+        canvas.onTouch = onTouch
+        canvas.setShapeKind(shapeKind)
         context.coordinator.revision = revision
-
-        let picker = context.coordinator.toolPicker
-        picker.addObserver(canvas)
-        picker.setVisible(true, forFirstResponder: canvas)
+        canvas.attachToolPicker()
         return canvas
     }
 
     func updateUIView(_ canvas: PageCanvasView, context: Context) {
         context.coordinator.onChange = onChange
         canvas.onAddPage = onAddPage
+        canvas.onTouch = onTouch
         canvas.drawingPolicy = drawingPolicy
+        canvas.setShapeKind(shapeKind)
         canvas.configure(layout: document.layout, paper: document.paper, pdf: document.pdf)
         if context.coordinator.revision != revision {
             context.coordinator.revision = revision
             canvas.drawing = document.drawing
         }
+        canvas.scheduleToolPickerReclaim()
     }
 
     static func dismantleUIView(_ canvas: PageCanvasView, coordinator: Coordinator) {
-        coordinator.toolPicker.setVisible(false, forFirstResponder: canvas)
-        coordinator.toolPicker.removeObserver(canvas)
-        canvas.resignFirstResponder()
+        canvas.detachToolPicker()
     }
 
     private var drawingPolicy: PKCanvasViewDrawingPolicy {
@@ -56,7 +61,6 @@ struct CanvasView: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, PKCanvasViewDelegate {
-        let toolPicker = PKToolPicker()
         var onChange: (PKDrawing) -> Void
         var revision = 0
 
@@ -81,16 +85,36 @@ struct CanvasView: UIViewRepresentable {
 
 final class PageCanvasView: PKCanvasView {
     var onAddPage: (() -> Void)?
+    var onTouch: (() -> Void)?
+
+    /// One picker for every canvas, so nothing is handed over when switching documents and the
+    /// selected tool carries across them.
+    private static let toolPicker = PKToolPicker()
 
     private let pagesView = UIView()
     private let pullLabel = UILabel()
     private var pageViews: [UIView] = []
+    private var templateLayers: [CAShapeLayer] = []
     private var layout: PageLayout?
     private var paper: Paper?
     private var pdf: CGPDFDocument?
     private var fittedWidth: CGFloat = 0
     private var isPullArmed = false
     private var scrollsToLastPage = false
+    private var refitOffsetY: CGFloat?
+    private var keepsToolPicker = false
+    private var isReclaimScheduled = false
+
+    private var shapeKind: ShapeKind?
+    private var shapeStart: CGPoint?
+    private var shapeTool = PKInkingTool(.pen, color: .black, width: 3)
+    private let shapePreview = CAShapeLayer()
+    private lazy var shapeRecognizer: UIPanGestureRecognizer = {
+        let recognizer = UIPanGestureRecognizer(target: self, action: #selector(handleShapeDrag))
+        recognizer.maximumNumberOfTouches = 1
+        recognizer.isEnabled = false
+        return recognizer
+    }()
 
     /// How far past the end, in screen points, the user has to pull to add a page.
     private static let pullThreshold: CGFloat = 90
@@ -114,6 +138,22 @@ final class PageCanvasView: PKCanvasView {
         pullLabel.alpha = 0
         addSubview(pullLabel)
 
+        shapePreview.fillColor = nil
+        shapePreview.lineCap = .round
+        shapePreview.lineJoin = .round
+        // Page views are added to `pagesView` later, so this keeps the preview above them.
+        shapePreview.zPosition = 1
+        pagesView.layer.addSublayer(shapePreview)
+        addGestureRecognizer(shapeRecognizer)
+        addGestureRecognizer(TouchLiftObserver { [weak self] in
+            self?.scheduleToolPickerReclaim()
+            self?.onTouch?()
+        })
+
+        for name in [UIScene.didActivateNotification, UITextField.textDidEndEditingNotification, UITextView.textDidEndEditingNotification] {
+            NotificationCenter.default.addObserver(self, selector: #selector(scheduleToolPickerReclaim), name: name, object: nil)
+        }
+
         alwaysBounceVertical = true
         backgroundColor = .clear
         isOpaque = false
@@ -128,8 +168,114 @@ final class PageCanvasView: PKCanvasView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        // The tool picker only shows while the canvas is first responder.
-        if window != nil { becomeFirstResponder() }
+        scheduleToolPickerReclaim()
+    }
+
+    // MARK: Tool picker
+
+    func attachToolPicker() {
+        keepsToolPicker = true
+        Self.toolPicker.addObserver(self)
+        Self.toolPicker.setVisible(true, forFirstResponder: self)
+    }
+
+    func detachToolPicker() {
+        keepsToolPicker = false
+        Self.toolPicker.setVisible(false, forFirstResponder: self)
+        Self.toolPicker.removeObserver(self)
+        _ = resignFirstResponder()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned { scheduleToolPickerReclaim() }
+        return resigned
+    }
+
+    /// The tool picker only shows while the canvas is first responder, which it can lose to
+    /// presentations, text fields, the sidebar, or the app leaving the foreground.
+    @objc func scheduleToolPickerReclaim() {
+        guard keepsToolPicker, !isFirstResponder, !isReclaimScheduled else { return }
+        isReclaimScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            self?.isReclaimScheduled = false
+            self?.reclaimToolPicker()
+        }
+    }
+
+    private func reclaimToolPicker() {
+        guard keepsToolPicker, !isFirstResponder, let window, window.windowScene?.activationState == .foregroundActive else { return }
+        // Text being typed elsewhere keeps its keyboard; its end-of-editing notification brings us back.
+        guard !(UIResponder.currentFirstResponder is UIKeyInput) else { return }
+        if window.rootViewController?.presentedViewController != nil {
+            // Nothing announces when a sheet or alert has gone, so check again shortly.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.scheduleToolPickerReclaim() }
+            return
+        }
+        _ = becomeFirstResponder()
+    }
+
+    // MARK: Shapes
+
+    func setShapeKind(_ kind: ShapeKind?) {
+        if kind != shapeKind { endShapePreview() }
+        shapeKind = kind
+        drawingGestureRecognizer.isEnabled = kind == nil
+        shapeRecognizer.isEnabled = kind != nil
+        let types: [UITouch.TouchType] = drawingPolicy == .pencilOnly ? [.pencil] : [.pencil, .direct, .indirectPointer]
+        shapeRecognizer.allowedTouchTypes = types.map { $0.rawValue as NSNumber }
+    }
+
+    @objc private func handleShapeDrag(_ recognizer: UIPanGestureRecognizer) {
+        guard let shapeKind else { return }
+        let location = recognizer.location(in: self)
+        let point = CGPoint(x: location.x / zoomScale, y: location.y / zoomScale)
+
+        switch recognizer.state {
+        case .began:
+            let moved = recognizer.translation(in: self)
+            shapeStart = CGPoint(x: point.x - moved.x / zoomScale, y: point.y - moved.y / zoomScale)
+            // The eraser and lasso have no ink, so shapes use the last ink that was selected.
+            if let inking = tool as? PKInkingTool { shapeTool = inking }
+            shapePreview.lineWidth = shapeTool.width
+            shapePreview.strokeColor = PKInkingTool.convertColor(shapeTool.color, from: .light, to: traitCollection.userInterfaceStyle).cgColor
+            updateShapePreview(to: point)
+        case .changed:
+            updateShapePreview(to: point)
+        case .ended:
+            if let start = shapeStart, hypot(point.x - start.x, point.y - start.y) >= 2 {
+                let strokes = shapeKind.strokes(from: start, to: point, tool: shapeTool)
+                replaceDrawing(with: drawing.appending(PKDrawing(strokes: strokes)))
+            }
+            endShapePreview()
+        default:
+            endShapePreview()
+        }
+    }
+
+    private func updateShapePreview(to point: CGPoint) {
+        guard let shapeKind, let shapeStart else { return }
+        let path = CGMutablePath()
+        for polyline in shapeKind.polylines(from: shapeStart, to: point, lineWidth: shapeTool.width) {
+            path.addLines(between: polyline)
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        shapePreview.path = path
+        CATransaction.commit()
+    }
+
+    private func endShapePreview() {
+        shapeStart = nil
+        shapePreview.path = nil
+    }
+
+    /// Setting `drawing` directly isn't undoable, so register it with the canvas's undo manager.
+    private func replaceDrawing(with newDrawing: PKDrawing) {
+        let oldDrawing = drawing
+        drawing = newDrawing
+        undoManager?.registerUndo(withTarget: self) { $0.replaceDrawing(with: oldDrawing) }
+        delegate?.canvasViewDrawingDidChange?(self)
     }
 
     func configure(layout: PageLayout, paper: Paper, pdf: CGPDFDocument?) {
@@ -143,6 +289,7 @@ final class PageCanvasView: PKCanvasView {
         overrideUserInterfaceStyle = pdf == nil ? .unspecified : .light
 
         pageViews.forEach { $0.removeFromSuperview() }
+        templateLayers = []
         pageViews = layout.frames.enumerated().map { i, frame in
             let page = UIView(frame: frame)
             page.layer.borderWidth = 0.75
@@ -153,6 +300,10 @@ final class PageCanvasView: PKCanvasView {
                 let pdfView = PDFPageView(page: pdfPage, frame: page.bounds)
                 pdfView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
                 page.addSubview(pdfView)
+            } else {
+                let templateLayer = CAShapeLayer()
+                page.layer.addSublayer(templateLayer)
+                templateLayers.append(templateLayer)
             }
             pagesView.addSubview(page)
             return page
@@ -174,6 +325,21 @@ final class PageCanvasView: PKCanvasView {
             page.layer.borderColor = UIColor.separator.resolvedColor(with: traits).cgColor
             page.layer.shadowColor = UIColor.black.cgColor
         }
+        for layer in templateLayers {
+            layer.fillColor = PageTemplate.color(dark: traits.userInterfaceStyle == .dark).cgColor
+        }
+    }
+
+    /// Infinite pages grow as they're drawn on, so their pattern is rebuilt when the size changes.
+    private func updateTemplates(isContinuous: Bool) {
+        guard let template = paper?.template else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (page, layer) in zip(pageViews, templateLayers) where layer.path == nil || layer.bounds.size != page.bounds.size {
+            layer.frame = page.bounds
+            layer.path = template.path(in: page.bounds.size, continuous: isContinuous)
+        }
+        CATransaction.commit()
     }
 
     override func layoutSubviews() {
@@ -185,10 +351,15 @@ final class PageCanvasView: PKCanvasView {
         if bounds.width != fittedWidth {
             let fit = bounds.width / layout.contentWidth
             let wasFitted = fittedWidth == 0 || abs(zoomScale - minimumZoomScale) < 0.001
+            let visibleTop = (contentOffset.y + adjustedContentInset.top) / zoomScale
             fittedWidth = bounds.width
             maximumZoomScale = fit * 5
             minimumZoomScale = fit
-            if wasFitted { zoomScale = fit }
+            if wasFitted {
+                zoomScale = fit
+                // Re-fitting (the sidebar hiding, a rotation) keeps the same part of the page in view.
+                if !isFirstFit { refitOffsetY = visibleTop * fit - adjustedContentInset.top }
+            }
         }
 
         let visibleHeight = bounds.height / zoomScale
@@ -204,6 +375,10 @@ final class PageCanvasView: PKCanvasView {
         if contentSize != size { contentSize = size }
         // Zooming to fit shifts the scroll position; start at the top so the first margin shows.
         if isFirstFit { contentOffset = CGPoint(x: -adjustedContentInset.left, y: -adjustedContentInset.top) }
+        if let refitOffsetY {
+            contentOffset = CGPoint(x: -adjustedContentInset.left, y: refitOffsetY)
+            self.refitOffsetY = nil
+        }
 
         pagesView.bounds = CGRect(x: 0, y: 0, width: layout.contentWidth, height: height)
         pagesView.transform = CGAffineTransform(scaleX: zoomScale, y: zoomScale)
@@ -211,6 +386,7 @@ final class PageCanvasView: PKCanvasView {
         for page in pageViews {
             page.layer.shadowPath = UIBezierPath(rect: page.bounds).cgPath
         }
+        updateTemplates(isContinuous: layout.isInfinite)
         if subviews.first !== pagesView { sendSubviewToBack(pagesView) }
 
         let contentBottom = max(contentSize.height, contentOffset.y + bounds.height - max(overscroll, 0) - adjustedContentInset.bottom)
@@ -221,6 +397,9 @@ final class PageCanvasView: PKCanvasView {
             let y = min((last.minY - PageLayout.margin) * zoomScale, max(contentSize.height - bounds.height + adjustedContentInset.bottom, 0))
             setContentOffset(CGPoint(x: contentOffset.x, y: y - adjustedContentInset.top), animated: true)
         }
+
+        // Runs on every scroll and stroke, so a lost picker can't stay lost while the canvas is in use.
+        scheduleToolPickerReclaim()
     }
 
     // MARK: Pull to add a page
@@ -250,6 +429,46 @@ final class PageCanvasView: PKCanvasView {
         isPullArmed = false
         pullLabel.text = "Pull to Add a Page"
         onAddPage?()
+    }
+}
+
+/// Reports touches lifting from the canvas without taking part in any other gesture.
+private final class TouchLiftObserver: UIGestureRecognizer {
+    private let onLift: () -> Void
+
+    init(onLift: @escaping () -> Void) {
+        self.onLift = onLift
+        super.init(target: nil, action: nil)
+        cancelsTouchesInView = false
+        delaysTouchesBegan = false
+        delaysTouchesEnded = false
+    }
+
+    override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+    override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        onLift()
+        state = .failed
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        state = .failed
+    }
+}
+
+private extension UIResponder {
+    private static weak var captured: UIResponder?
+
+    /// Sending an action to a nil target delivers it to the first responder.
+    static var currentFirstResponder: UIResponder? {
+        captured = nil
+        UIApplication.shared.sendAction(#selector(captureAsFirstResponder), to: nil, from: nil, for: nil)
+        return captured
+    }
+
+    @objc private func captureAsFirstResponder() {
+        UIResponder.captured = self
     }
 }
 

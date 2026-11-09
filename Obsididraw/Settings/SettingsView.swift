@@ -49,7 +49,7 @@ struct SettingsView: View {
                 #endif
 
                 Section("New Drawings") {
-                    Text("The page size and colors below apply to drawings you create from now on. To change an existing drawing, use Page Setup in its toolbar.")
+                    Text("The page size, template and colors below apply to drawings you create from now on. To change an existing drawing, use Page Setup in its toolbar.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }

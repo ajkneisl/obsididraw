@@ -25,6 +25,8 @@ export interface Paper {
 	width: number;
 	height: number;
 	color: { light: string; dark: string };
+	/** The pattern behind the ink: see template.ts. Missing means blank; ignored on PDFs. */
+	template?: string;
 }
 
 export interface DrawingDocument {

@@ -16,8 +16,9 @@ import {
 	pushGraphicsState,
 	rgb,
 } from "pdf-lib";
-import { DrawingDocument } from "./format";
-import { Matrix, Point, StrokeShape, apply, pageSize, parseColor, polygonPath, strokeShape } from "./geometry";
+import { DrawingDocument, isInfinite } from "./format";
+import { TEMPLATE_OPACITY, templatePath } from "./template";
+import { Matrix, Point, StrokeShape, apply, pageSize, parseColor, polygonsPath, strokeShape } from "./geometry";
 
 /**
  * Builds a PDF of the drawing: one page per page, ink as vector shapes on the light page color,
@@ -38,6 +39,8 @@ export async function exportToPdf(doc: DrawingDocument, backgroundPdf?: ArrayBuf
 		if (source && i < source.getPageCount()) {
 			await drawSourcePage(out, pdfPage, source.getPage(i), width, height);
 		}
+		const pattern = doc.pdf ? "" : templatePath(doc.paper.template, width, height, isInfinite(doc));
+		if (pattern) pdfPage.drawSvgPath(pattern, { x: 0, y: height, color: rgb(0, 0, 0), opacity: TEMPLATE_OPACITY, borderWidth: 0 });
 		for (const shape of shapes) drawShape(pdfPage, shape, height);
 	}
 	return out.save();
@@ -76,7 +79,7 @@ function drawShape(page: PDFPage, shape: StrokeShape, pageHeight: number) {
 	};
 
 	if (!shape.mask) {
-		page.drawSvgPath(polygonPath(shape.polygon), options);
+		page.drawSvgPath(polygonsPath(shape.polygons), options);
 		return;
 	}
 
@@ -84,7 +87,7 @@ function drawShape(page: PDFPage, shape: StrokeShape, pageHeight: number) {
 	// and is its own inverse, so applying it again restores the space drawSvgPath expects.
 	const flip = concatTransformationMatrix(1, 0, 0, -1, 0, pageHeight);
 	page.pushOperators(pushGraphicsState(), flip, ...maskOperators(shape.mask.path, shape.mask.matrix), clip(), endPath(), flip);
-	page.drawSvgPath(polygonPath(shape.polygon), options);
+	page.drawSvgPath(polygonsPath(shape.polygons), options);
 	page.pushOperators(popGraphicsState());
 }
 

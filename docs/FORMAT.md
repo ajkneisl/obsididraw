@@ -52,6 +52,7 @@ alongside it, so any tool can read, render, or generate these files.
 | `width`  | number | Page width in points (1/72 inch). For `infinite`, the width of the scrolling page. |
 | `height` | number | Page height in points. Unused for `infinite`. |
 | `color`  | object | `light` and `dark`: `#RRGGBBAA` page colors for light and dark appearance. |
+| `template` | string | Optional pattern behind the ink, see below. Missing or unknown values mean `blank`. Ignored when the drawing has a `pdf`. |
 
 An `infinite` drawing has exactly one page that grows downward. Renderers usually crop it to
 its content.
@@ -59,6 +60,25 @@ its content.
 **Dark appearance.** Ink colors are always stored as drawn in light appearance. To show a
 drawing in dark appearance, fill the page with `color.dark` and invert the ink's lightness, as
 PencilKit does on iPad. Drawings with a `pdf` always render light.
+
+## Templates
+
+Patterns are part of the page, not the ink: they're drawn over the page color and under every
+stroke, black in light appearance and white in dark, at 30% opacity, and are never inverted.
+Lines are 0.6 points thick and centered on their position; dots have a 0.9 point radius. All
+positions are in page points. Below, `W` and `H` are the page size, and `last` is `H` for
+`infinite` paper (the pattern runs to the end of the visible page) or `H − 24` otherwise.
+"Rules" are horizontal lines at `y = 48, 72, 96, …` up to and including `last`.
+
+| Value            | Pattern |
+|------------------|---------|
+| `blank`          | None. |
+| `lined`          | Rules across the full width. |
+| `squares`        | Vertical and horizontal lines every 24 points, starting at 24 and stopping before `W` and `H`. |
+| `dots`           | A dot at every intersection of that same 24-point grid. |
+| `cornell`        | A line across the full width at `y = 48`. With `cue = round(0.3 × W)` and `summary = round(0.8 × H)` (or `H` for `infinite`): a vertical line at `x = cue` from 48 to `summary`, rules from `cue` to `W` at `y = 72, 96, …` before `summary`, and, except on `infinite`, a line across the full width at `y = summary`. |
+| `twoPaneLined`   | Two equal columns inside a 24-point side margin with a 24-point gutter, each with its own rules, and a vertical divider centered in the gutter from `y = 24` to `last`. |
+| `threePaneLined` | The same with three columns. |
 
 ## Pages
 
@@ -101,8 +121,17 @@ missing fields with the defaults shown.
 The points are **control points of a uniform cubic B-spline**, exactly as PencilKit stores them,
 not points on the curve. To draw the curve, repeat the first and last control point twice
 (clamping the spline to its ends) and evaluate each segment. As a simpler approximation you can
-draw a polyline through the control points: they sit very close to the curve. For each sample,
-the stroke's width is roughly the average of `w` and `h`.
+draw a polyline through the control points: they sit very close to the curve.
+
+`w` and `h` are PencilKit's internal ink footprint, not the drawn width. With `size` as their
+average, draw a solid shape `scale × (size − offset)` points wide, never below zero:
+
+| Ink                | `scale` | `offset` | Notes |
+|--------------------|---------|----------|-------|
+| `pen`, `monoline`  | 2       | 2        | Unknown inks should use this too. |
+| `fountainPen`      | 1       | 2        | Typical value: wider on vertical strokes (`2 × (size − 2)`), narrower on horizontal ones (`(size − 2) / 2`). |
+| `pencil`, `crayon`, `watercolor` | 1 | 0 | PencilKit's texture spans about `2 × size`, but its speckle covers only about half of that. |
+| `marker`           | 1       | 0        | Typical value: about `1.4 × size` on vertical strokes, `0.56 × size` on horizontal ones. |
 
 ## Annotating PDFs
 

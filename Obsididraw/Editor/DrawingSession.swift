@@ -38,6 +38,16 @@ final class DrawingSession {
         (pdfURL ?? url).deletingPathExtension().lastPathComponent
     }
 
+    /// The vault file this document is named after: the PDF it annotates, or else the drawing.
+    var vaultItem: VaultItem {
+        if let pdfURL { VaultItem(url: pdfURL, kind: .pdf) } else { VaultItem(url: url, kind: .drawing) }
+    }
+
+    /// Whether this session is editing the document selected as `selection`.
+    func isShowing(_ selection: URL) -> Bool {
+        vaultItem.url.standardizedFileURL.path(percentEncoded: false) == selection.standardizedFileURL.path(percentEncoded: false)
+    }
+
     /// The file to show in Obsidian: the drawing once it exists, otherwise the PDF it annotates.
     var fileForObsidian: URL {
         if let pdfURL, !FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) { return pdfURL }

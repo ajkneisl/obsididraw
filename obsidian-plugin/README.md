@@ -11,14 +11,16 @@ Displays and exports `.draw` drawings made with the Obsididraw app for iPad and 
 - Clicking an embed on iPad or iPhone opens it in the Obsididraw app to draw in (the app needs
   this vault open). Elsewhere it opens the drawing view in Obsidian. The **Clicking a drawing**
   setting can make clicks always open the app (for example the Mac app) or always stay in
-  Obsidian. The drawing view's pencil button and the **Edit drawing in Obsididraw** command
-  open the app too.
+  Obsidian. **Open in Obsididraw** opens the app from the file menu (right-click a `.draw` file),
+  the drawing view's pencil button, or the command palette.
 - Annotated PDFs (`Paper.pdf.draw`) show the PDF pages with the ink on top, using Obsidian's
   built-in PDF renderer.
 - **Export to PDF** is available from the drawing view's header, the file menu, and the command
   palette. Like Obsidian's own export, it asks where to save: the system save dialog on desktop
   (starting in the drawing's folder), or a vault folder picker on mobile, after which the PDF
   opens. Ink is exported as vector shapes on the light page color.
+- Page templates set in the app (lined, squares, dots, Cornell notes, two and three pane lined)
+  show behind the ink and are included in exported PDFs.
 - Views and embeds refresh when the file changes, for example after a sync from the iPad.
 - Setting **Follow dark theme**: in dark themes, drawings use their dark page color and their
   ink is inverted, the way PencilKit does on iPad. PDFs always stay light.

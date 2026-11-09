@@ -8,10 +8,17 @@ struct DrawingEditorView: View {
     @State private var session: DrawingSession
     @State private var isShowingPageSetup = false
     @State private var exportedPDF: PDFFile?
+    @State private var shapeKind: ShapeKind?
+    @State private var renameError: String?
     @AppStorage("allowsFingerDrawing") private var allowsFingerDrawing = false
 
-    init(url: URL, pdfURL: URL? = nil) {
+    private let onRenamed: (_ old: URL, _ new: URL) -> Void
+    private let onCanvasTouched: () -> Void
+
+    init(url: URL, pdfURL: URL? = nil, onRenamed: @escaping (_ old: URL, _ new: URL) -> Void, onCanvasTouched: @escaping () -> Void) {
         _session = State(initialValue: DrawingSession(url: url, pdfURL: pdfURL))
+        self.onRenamed = onRenamed
+        self.onCanvasTouched = onCanvasTouched
     }
 
     var body: some View {
@@ -27,7 +34,9 @@ struct DrawingEditorView: View {
                         document: document,
                         revision: session.revision,
                         allowsFingerDrawing: allowsFingerDrawing,
+                        shapeKind: shapeKind,
                         onChange: { session.drawingChanged($0) },
+                        onTouch: onCanvasTouched,
                         onAddPage: document.canAddPages ? { session.addPage() } : nil
                     )
                     .ignoresSafeArea(.container, edges: .bottom)
@@ -42,6 +51,11 @@ struct DrawingEditorView: View {
             if let document = session.document {
                 PageSetupView(paper: document.paper, isPDF: document.pdf != nil) { session.updatePaper($0) }
             }
+        }
+        .alert("Couldn't Rename", isPresented: Binding(get: { renameError != nil }, set: { if !$0 { renameError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(renameError ?? "")
         }
         .fileExporter(
             isPresented: Binding(get: { exportedPDF != nil }, set: { if !$0 { exportedPDF = nil } }),
@@ -64,7 +78,22 @@ struct DrawingEditorView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            DocumentTitleField(title: session.title, onRename: rename)
+        }
         ToolbarItemGroup(placement: .primaryAction) {
+            Menu {
+                Picker("Shape", selection: $shapeKind) {
+                    Label("Freehand", systemImage: "scribble").tag(ShapeKind?.none)
+                    ForEach(ShapeKind.allCases) { kind in
+                        Label(kind.title, systemImage: kind.systemImage).tag(ShapeKind?.some(kind))
+                    }
+                }
+            } label: {
+                Label("Shapes", systemImage: shapeKind?.systemImage ?? "square.on.circle")
+                    .symbolVariant(shapeKind == nil ? .none : .fill)
+            }
+            .disabled(session.document == nil)
             if session.document?.canAddPages == true {
                 Button("Add Page", systemImage: "plus.rectangle.portrait") { session.addPage() }
             }
@@ -84,5 +113,62 @@ struct DrawingEditorView: View {
                 if let url = store.obsidianURL(for: session.fileForObsidian) { openURL(url) }
             }
         }
+    }
+
+    private func rename(to name: String) {
+        let item = session.vaultItem
+        Task {
+            do {
+                onRenamed(item.url, try await store.rename(item, to: name))
+            } catch {
+                renameError = error.localizedDescription
+            }
+        }
+    }
+}
+
+/// The document's name, centered in the navigation bar. Tapping it edits the name in place.
+private struct DocumentTitleField: View {
+    let title: String
+    let onRename: (String) -> Void
+
+    @State private var draft = ""
+    @State private var isEditing = false
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        if isEditing {
+            TextField("Name", text: $draft)
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.center)
+                .autocorrectionDisabled()
+                .submitLabel(.done)
+                .frame(width: 320)
+                .focused($isFocused)
+                .onSubmit(commit)
+                .onChange(of: isFocused) { _, focused in
+                    if !focused { commit() }
+                }
+                .task { isFocused = true }
+        } else {
+            Button {
+                draft = title
+                isEditing = true
+            } label: {
+                Text(title)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Renames this document")
+        }
+    }
+
+    private func commit() {
+        guard isEditing else { return }
+        isEditing = false
+        let name = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty, name != title { onRename(name) }
     }
 }

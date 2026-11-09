@@ -66,7 +66,7 @@ export default class ObsididrawPlugin extends Plugin {
 
 		this.addCommand({
 			id: "open-in-app",
-			name: "Edit drawing in Obsididraw",
+			name: "Open in Obsididraw",
 			checkCallback: (checking) => {
 				const file = this.app.workspace.getActiveFile();
 				if (file?.extension !== EXTENSION) return false;
@@ -96,6 +96,12 @@ export default class ObsididrawPlugin extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on("file-menu", (menu, file) => {
 				if (!(file instanceof TFile) || file.extension !== EXTENSION) return;
+				menu.addItem((item) =>
+					item
+						.setTitle("Open in Obsididraw")
+						.setIcon("pencil")
+						.onClick(() => this.openInApp(file)),
+				);
 				menu.addItem((item) =>
 					item
 						.setTitle("Export to PDF")
@@ -279,7 +285,7 @@ class DrawingView extends FileView {
 		this.addAction("file-down", "Export to PDF", () => {
 			if (this.file) void plugin.exportPdf(this.file);
 		});
-		this.addAction("pencil", "Edit in Obsididraw", () => {
+		this.addAction("pencil", "Open in Obsididraw", () => {
 			if (this.file) plugin.openInApp(this.file);
 		});
 	}
