@@ -68,17 +68,22 @@ stroke, black in light appearance and white in dark, at 30% opacity, and are nev
 Lines are 0.6 points thick and centered on their position; dots have a 0.9 point radius. All
 positions are in page points. Below, `W` and `H` are the page size, and `last` is `H` for
 `infinite` paper (the pattern runs to the end of the visible page) or `H − 24` otherwise.
-"Rules" are horizontal lines at `y = 48, 72, 96, …` up to and including `last`.
+"Rules" are horizontal lines at `y = 48, 72, 96, …` up to and including `last`. The compact
+templates are the same as their namesakes with the rules 12 points apart instead of 24
+(`y = 48, 60, 72, …`), which doubles the number of lines.
 
 | Value            | Pattern |
 |------------------|---------|
 | `blank`          | None. |
 | `lined`          | Rules across the full width. |
+| `linedCompact`   | `lined` with compact rules. |
 | `squares`        | Vertical and horizontal lines every 24 points, starting at 24 and stopping before `W` and `H`. |
 | `dots`           | A dot at every intersection of that same 24-point grid. |
 | `cornell`        | A line across the full width at `y = 48`. With `cue = round(0.3 × W)` and `summary = round(0.8 × H)` (or `H` for `infinite`): a vertical line at `x = cue` from 48 to `summary`, rules from `cue` to `W` at `y = 72, 96, …` before `summary`, and, except on `infinite`, a line across the full width at `y = summary`. |
 | `twoPaneLined`   | Two equal columns inside a 24-point side margin with a 24-point gutter, each with its own rules, and a vertical divider centered in the gutter from `y = 24` to `last`. |
-| `threePaneLined` | The same with three columns. |
+| `twoPaneLinedCompact` | `twoPaneLined` with compact rules. |
+| `threePaneLined` | `twoPaneLined` with three columns. |
+| `threePaneLinedCompact` | `threePaneLined` with compact rules. |
 
 ## Pages
 

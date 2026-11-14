@@ -15,6 +15,7 @@ struct CanvasView: UIViewRepresentable {
     var onTouch: () -> Void
     /// Called when the user pulls past the last page; nil when pages can't be added.
     var onAddPage: (() -> Void)?
+    var proxy: CanvasProxy?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onChange: onChange)
@@ -29,6 +30,7 @@ struct CanvasView: UIViewRepresentable {
         canvas.onAddPage = onAddPage
         canvas.onTouch = onTouch
         canvas.setShapeKind(shapeKind)
+        proxy?.canvas = canvas
         context.coordinator.revision = revision
         canvas.attachToolPicker()
         return canvas
@@ -40,6 +42,7 @@ struct CanvasView: UIViewRepresentable {
         canvas.onTouch = onTouch
         canvas.drawingPolicy = drawingPolicy
         canvas.setShapeKind(shapeKind)
+        proxy?.canvas = canvas
         canvas.configure(layout: document.layout, paper: document.paper, pdf: document.pdf)
         if context.coordinator.revision != revision {
             context.coordinator.revision = revision
@@ -77,10 +80,22 @@ struct CanvasView: UIViewRepresentable {
             (scrollView as? PageCanvasView)?.updatePullToAdd()
         }
 
+        func scrollViewDidZoom(_ scrollView: UIScrollView) {
+            (scrollView as? PageCanvasView)?.zoomDidChange()
+        }
+
         func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint, targetContentOffset: UnsafeMutablePointer<CGPoint>) {
             (scrollView as? PageCanvasView)?.finishPullToAdd()
         }
     }
+}
+
+/// Lets the editor's toolbar ask the canvas what is on screen.
+final class CanvasProxy {
+    fileprivate weak var canvas: PageCanvasView?
+
+    /// The page at the middle of the screen.
+    var pageInView: Int? { canvas?.pageInView }
 }
 
 final class PageCanvasView: PKCanvasView {
@@ -89,7 +104,13 @@ final class PageCanvasView: PKCanvasView {
 
     /// One picker for every canvas, so nothing is handed over when switching documents and the
     /// selected tool carries across them.
-    private static let toolPicker = PKToolPicker()
+    private static let toolPicker: PKToolPicker = {
+        let picker = PKToolPicker()
+        picker.addObserver(inkMemory)
+        inkMemory.toolPickerSelectedToolItemDidChange(picker)
+        return picker
+    }()
+    private static let inkMemory = InkMemory()
 
     private let pagesView = UIView()
     private let pullLabel = UILabel()
@@ -101,13 +122,14 @@ final class PageCanvasView: PKCanvasView {
     private var fittedWidth: CGFloat = 0
     private var isPullArmed = false
     private var scrollsToLastPage = false
+    private var scrollsBackToContent = false
     private var refitOffsetY: CGFloat?
     private var keepsToolPicker = false
     private var isReclaimScheduled = false
 
     private var shapeKind: ShapeKind?
     private var shapeStart: CGPoint?
-    private var shapeTool = PKInkingTool(.pen, color: .black, width: 3)
+    private var shapeTool: PKInkingTool { Self.inkMemory.tool }
     private let shapePreview = CAShapeLayer()
     private lazy var shapeRecognizer: UIPanGestureRecognizer = {
         let recognizer = UIPanGestureRecognizer(target: self, action: #selector(handleShapeDrag))
@@ -217,13 +239,35 @@ final class PageCanvasView: PKCanvasView {
 
     // MARK: Shapes
 
+    /// PencilKit's drawing gestures. It keeps a second one beside the one it exposes, and other
+    /// drags on the canvas only start once both have given up, so shapes need both turned off:
+    /// with one left on, a shape starts a third of a second into its drag.
+    private var drawingRecognizers: [UIGestureRecognizer] {
+        let exposed = drawingGestureRecognizer
+        return exposed.view?.gestureRecognizers?.filter { type(of: $0) == type(of: exposed) } ?? [exposed]
+    }
+
     func setShapeKind(_ kind: ShapeKind?) {
         if kind != shapeKind { endShapePreview() }
+        let wasDrawingShapes = shapeKind != nil
         shapeKind = kind
-        drawingGestureRecognizer.isEnabled = kind == nil
         shapeRecognizer.isEnabled = kind != nil
         let types: [UITouch.TouchType] = drawingPolicy == .pencilOnly ? [.pencil] : [.pencil, .direct, .indirectPointer]
         shapeRecognizer.allowedTouchTypes = types.map { $0.rawValue as NSNumber }
+        if kind != nil {
+            drawingRecognizers.forEach { $0.isEnabled = false }
+        } else if wasDrawingShapes {
+            // Being given a tool makes PencilKit turn its drawing back on, as far as that tool uses it.
+            let current = tool
+            tool = current
+        }
+    }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        // PencilKit turns its drawing back on whenever the tool changes. Every touch is hit-tested
+        // before any gesture sees it, so this keeps shapes from being drawn freehand.
+        if shapeKind != nil { drawingRecognizers.forEach { $0.isEnabled = false } }
+        return super.hitTest(point, with: event)
     }
 
     @objc private func handleShapeDrag(_ recognizer: UIPanGestureRecognizer) {
@@ -236,8 +280,8 @@ final class PageCanvasView: PKCanvasView {
             let moved = recognizer.translation(in: self)
             shapeStart = CGPoint(x: point.x - moved.x / zoomScale, y: point.y - moved.y / zoomScale)
             // The eraser and lasso have no ink, so shapes use the last ink that was selected.
-            if let inking = tool as? PKInkingTool { shapeTool = inking }
-            shapePreview.lineWidth = shapeTool.width
+            if let inking = tool as? PKInkingTool { Self.inkMemory.tool = inking }
+            shapePreview.lineWidth = ShapeKind.lineWidth(of: shapeTool)
             shapePreview.strokeColor = PKInkingTool.convertColor(shapeTool.color, from: .light, to: traitCollection.userInterfaceStyle).cgColor
             updateShapePreview(to: point)
         case .changed:
@@ -256,7 +300,7 @@ final class PageCanvasView: PKCanvasView {
     private func updateShapePreview(to point: CGPoint) {
         guard let shapeKind, let shapeStart else { return }
         let path = CGMutablePath()
-        for polyline in shapeKind.polylines(from: shapeStart, to: point, lineWidth: shapeTool.width) {
+        for polyline in shapeKind.polylines(from: shapeStart, to: point, lineWidth: ShapeKind.lineWidth(of: shapeTool)) {
             path.addLines(between: polyline)
         }
         CATransaction.begin()
@@ -315,7 +359,15 @@ final class PageCanvasView: PKCanvasView {
         if let oldLayout, !layout.isInfinite, layout.frames.count == oldLayout.frames.count + 1 {
             scrollsToLastPage = true
         }
+        // Deleting a page can leave the view scrolled past the new end.
+        if let oldLayout, layout.frames.count < oldLayout.frames.count { scrollsBackToContent = true }
         setNeedsLayout()
+    }
+
+    fileprivate var pageInView: Int? {
+        guard let layout, !layout.frames.isEmpty, bounds.height > 0 else { return nil }
+        let visibleMidY = bounds.minY + (adjustedContentInset.top + bounds.height - adjustedContentInset.bottom) / 2
+        return layout.pageIndex(nearestY: visibleMidY / zoomScale)
     }
 
     private func applyPageColors() {
@@ -362,15 +414,7 @@ final class PageCanvasView: PKCanvasView {
             }
         }
 
-        let visibleHeight = bounds.height / zoomScale
-        var height = layout.contentHeight
-        if layout.isInfinite, let first = layout.frames.first {
-            // The page keeps half a screen of blank space below the lowest stroke.
-            let bottom = drawing.bounds.isNull ? first.minY : drawing.bounds.maxY
-            let pageBottom = max(bottom + visibleHeight / 2, first.minY + visibleHeight - PageLayout.margin * 2)
-            pageViews.first?.frame.size.height = pageBottom - first.minY
-            height = pageBottom + PageLayout.margin
-        }
+        let height = layoutPages(layout)
         let size = CGSize(width: layout.contentWidth * zoomScale, height: height * zoomScale)
         if contentSize != size { contentSize = size }
         // Zooming to fit shifts the scroll position; start at the top so the first margin shows.
@@ -379,14 +423,6 @@ final class PageCanvasView: PKCanvasView {
             contentOffset = CGPoint(x: -adjustedContentInset.left, y: refitOffsetY)
             self.refitOffsetY = nil
         }
-
-        pagesView.bounds = CGRect(x: 0, y: 0, width: layout.contentWidth, height: height)
-        pagesView.transform = CGAffineTransform(scaleX: zoomScale, y: zoomScale)
-        pagesView.layer.position = .zero
-        for page in pageViews {
-            page.layer.shadowPath = UIBezierPath(rect: page.bounds).cgPath
-        }
-        updateTemplates(isContinuous: layout.isInfinite)
         if subviews.first !== pagesView { sendSubviewToBack(pagesView) }
 
         let contentBottom = max(contentSize.height, contentOffset.y + bounds.height - max(overscroll, 0) - adjustedContentInset.bottom)
@@ -397,9 +433,45 @@ final class PageCanvasView: PKCanvasView {
             let y = min((last.minY - PageLayout.margin) * zoomScale, max(contentSize.height - bounds.height + adjustedContentInset.bottom, 0))
             setContentOffset(CGPoint(x: contentOffset.x, y: y - adjustedContentInset.top), animated: true)
         }
+        if scrollsBackToContent {
+            scrollsBackToContent = false
+            if overscroll > 0 { setContentOffset(CGPoint(x: contentOffset.x, y: contentOffset.y - overscroll), animated: true) }
+        }
 
         // Runs on every scroll and stroke, so a lost picker can't stay lost while the canvas is in use.
         scheduleToolPickerReclaim()
+    }
+
+    /// Sizes the pages and scales them with the ink, returning the content's height in page points.
+    @discardableResult
+    private func layoutPages(_ layout: PageLayout) -> CGFloat {
+        var height = layout.contentHeight
+        if layout.isInfinite, let first = layout.frames.first {
+            // The page keeps half a screen of blank space below the lowest stroke.
+            let visibleHeight = bounds.height / zoomScale
+            let bottom = drawing.bounds.isNull ? first.minY : drawing.bounds.maxY
+            let pageBottom = max(bottom + visibleHeight / 2, first.minY + visibleHeight - PageLayout.margin * 2)
+            pageViews.first?.frame.size.height = pageBottom - first.minY
+            height = pageBottom + PageLayout.margin
+        }
+
+        pagesView.bounds = CGRect(x: 0, y: 0, width: layout.contentWidth, height: height)
+        pagesView.transform = CGAffineTransform(scaleX: zoomScale, y: zoomScale)
+        pagesView.layer.position = .zero
+        for page in pageViews {
+            page.layer.shadowPath = UIBezierPath(rect: page.bounds).cgPath
+        }
+        updateTemplates(isContinuous: layout.isInfinite)
+        return height
+    }
+
+    /// Keeps the pages in step with the ink as the zoom changes. The next layout pass would be too
+    /// late: a pinch that ends past the zoom limits springs back in an animation, and only changes
+    /// made as it starts move along with the ink. Later ones jump straight to where it will end.
+    func zoomDidChange() {
+        guard let layout, bounds.width > 0 else { return }
+        layoutPages(layout)
+        setNeedsLayout()
     }
 
     // MARK: Pull to add a page
@@ -429,6 +501,16 @@ final class PageCanvasView: PKCanvasView {
         isPullArmed = false
         pullLabel.text = "Pull to Add a Page"
         onAddPage?()
+    }
+}
+
+/// Remembers the ink last selected in the tool picker. Shapes are drawn with it while the eraser
+/// or lasso is selected, as those have no ink of their own.
+private final class InkMemory: NSObject, PKToolPickerObserver {
+    var tool = PKInkingTool(.pen, color: .black, width: PKInkingTool.InkType.pen.defaultWidth)
+
+    func toolPickerSelectedToolItemDidChange(_ toolPicker: PKToolPicker) {
+        if let item = toolPicker.selectedToolItem as? PKToolPickerInkingItem { tool = item.inkingTool }
     }
 }
 

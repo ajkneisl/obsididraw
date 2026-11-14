@@ -9,6 +9,8 @@ struct DrawingEditorView: View {
     @State private var isShowingPageSetup = false
     @State private var exportedPDF: PDFFile?
     @State private var shapeKind: ShapeKind?
+    @State private var canvasProxy = CanvasProxy()
+    @State private var pageToDelete: Int?
     @State private var renameError: String?
     @AppStorage("allowsFingerDrawing") private var allowsFingerDrawing = false
 
@@ -37,7 +39,8 @@ struct DrawingEditorView: View {
                         shapeKind: shapeKind,
                         onChange: { session.drawingChanged($0) },
                         onTouch: onCanvasTouched,
-                        onAddPage: document.canAddPages ? { session.addPage() } : nil
+                        onAddPage: document.canAddPages ? { session.addPage() } : nil,
+                        proxy: canvasProxy
                     )
                     .ignoresSafeArea(.container, edges: .bottom)
                     .background(Color(uiColor: PageCanvasView.deskColor).ignoresSafeArea())
@@ -51,6 +54,12 @@ struct DrawingEditorView: View {
             if let document = session.document {
                 PageSetupView(paper: document.paper, isPDF: document.pdf != nil) { session.updatePaper($0) }
             }
+        }
+        .alert("Delete Page?", isPresented: Binding(get: { pageToDelete != nil }, set: { if !$0 { pageToDelete = nil } }), presenting: pageToDelete) { index in
+            Button("Delete Page \(index + 1)", role: .destructive) { session.deletePage(at: index) }
+            Button("Cancel", role: .cancel) {}
+        } message: { index in
+            Text("Page \(index + 1) has ink on it, which will be deleted too. This can't be undone.")
         }
         .alert("Couldn't Rename", isPresented: Binding(get: { renameError != nil }, set: { if !$0 { renameError = nil } })) {
             Button("OK", role: .cancel) {}
@@ -96,6 +105,8 @@ struct DrawingEditorView: View {
             .disabled(session.document == nil)
             if session.document?.canAddPages == true {
                 Button("Add Page", systemImage: "plus.rectangle.portrait") { session.addPage() }
+                Button("Delete Page", systemImage: "minus.rectangle.portrait") { deletePageInView() }
+                    .disabled(session.document?.canDeletePages != true)
             }
             Button("Page Setup", systemImage: "doc.badge.gearshape") { isShowingPageSetup = true }
                 .disabled(session.document == nil)
@@ -112,6 +123,16 @@ struct DrawingEditorView: View {
                 session.saveNow()
                 if let url = store.obsidianURL(for: session.fileForObsidian) { openURL(url) }
             }
+        }
+    }
+
+    /// Deletes the page on screen, asking first if that would throw ink away.
+    private func deletePageInView() {
+        guard let index = canvasProxy.pageInView, let document = session.currentDocument else { return }
+        if document.pageHasInk(at: index) {
+            pageToDelete = index
+        } else {
+            session.deletePage(at: index)
         }
     }
 

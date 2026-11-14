@@ -4,7 +4,8 @@ import UIKit
 /// The pattern printed on a page, behind the ink. The geometry is specified in `docs/FORMAT.md`
 /// and mirrored by the Obsidian plugin's `template.ts`.
 nonisolated enum PageTemplate: String, Codable, CaseIterable, Identifiable {
-    case blank, lined, squares, dots, cornell, twoPaneLined, threePaneLined
+    case blank, lined, linedCompact, squares, dots, cornell
+    case twoPaneLined, twoPaneLinedCompact, threePaneLined, threePaneLinedCompact
 
     /// A template from a newer version of the format shows as blank rather than failing to open.
     init(from decoder: Decoder) throws {
@@ -17,11 +18,22 @@ nonisolated enum PageTemplate: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .blank: "Blank"
         case .lined: "Lined"
+        case .linedCompact: "Lined (Compact)"
         case .squares: "Squares"
         case .dots: "Dots"
         case .cornell: "Cornell Notes"
         case .twoPaneLined: "Two Pane Lined"
+        case .twoPaneLinedCompact: "Two Pane Lined (Compact)"
         case .threePaneLined: "Three Pane Lined"
+        case .threePaneLinedCompact: "Three Pane Lined (Compact)"
+        }
+    }
+
+    /// The distance between rules. Compact templates fit a second rule between each pair.
+    private var ruleSpacing: CGFloat {
+        switch self {
+        case .linedCompact, .twoPaneLinedCompact, .threePaneLinedCompact: Self.spacing / 2
+        default: Self.spacing
         }
     }
 
@@ -51,7 +63,7 @@ nonisolated enum PageTemplate: String, Codable, CaseIterable, Identifiable {
             path.addRect(CGRect(x: x - thickness / 2, y: y0, width: thickness, height: y1 - y0))
         }
         func rules(from x0: CGFloat, to x1: CGFloat, through bottom: CGFloat) {
-            for y in stride(from: top, through: bottom, by: spacing) { rule(from: x0, to: x1, y: y) }
+            for y in stride(from: top, through: bottom, by: ruleSpacing) { rule(from: x0, to: x1, y: y) }
         }
         func panes(_ count: Int) {
             let columnWidth = (width - margin * 2 - gutter * CGFloat(count - 1)) / CGFloat(count)
@@ -66,7 +78,7 @@ nonisolated enum PageTemplate: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .blank:
             break
-        case .lined:
+        case .lined, .linedCompact:
             rules(from: 0, to: width, through: lastRule)
         case .squares:
             for x in stride(from: spacing, to: width, by: spacing) { divider(x: x, from: 0, to: height) }
@@ -85,9 +97,9 @@ nonisolated enum PageTemplate: String, Codable, CaseIterable, Identifiable {
             divider(x: cue, from: top, to: summary)
             for y in stride(from: top + spacing, to: summary, by: spacing) { rule(from: cue, to: width, y: y) }
             if !continuous { rule(from: 0, to: width, y: summary) }
-        case .twoPaneLined:
+        case .twoPaneLined, .twoPaneLinedCompact:
             panes(2)
-        case .threePaneLined:
+        case .threePaneLined, .threePaneLinedCompact:
             panes(3)
         }
         return path

@@ -53,6 +53,8 @@ struct EditorDocument {
 
     var layout: PageLayout { PageLayout(pageSizes: pageSizes, infinite: paper.isInfinite) }
     var canAddPages: Bool { !paper.isInfinite && pdf == nil }
+    /// A drawing always keeps one page.
+    var canDeletePages: Bool { canAddPages && pageSizes.count > 1 }
 
     init(file: DrawingFile, pdf: CGPDFDocument?) {
         paper = file.paper
@@ -103,6 +105,20 @@ struct EditorDocument {
         guard canAddPages else { return }
         let pages = pageLocalStrokes()
         pageSizes.append(paper.pageSize)
+        drawing = Self.drawing(from: pages, layout: layout)
+    }
+
+    func pageHasInk(at index: Int) -> Bool {
+        let pages = pageLocalStrokes()
+        return pages.indices.contains(index) && !pages[index].isEmpty
+    }
+
+    /// Removes a page along with its ink. Later pages move up to close the gap.
+    mutating func deletePage(at index: Int) {
+        guard canDeletePages, pageSizes.indices.contains(index) else { return }
+        var pages = pageLocalStrokes()
+        pages.remove(at: index)
+        pageSizes.remove(at: index)
         drawing = Self.drawing(from: pages, layout: layout)
     }
 

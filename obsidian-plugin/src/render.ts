@@ -3,6 +3,8 @@ import { TEMPLATE_OPACITY, templatePath } from "./template";
 import { PADDING, StrokeShape, fmt, pageSize, parseColor, polygonsPath, shapeBounds, strokeShape } from "./geometry";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
+/** PDF canvases stop at this many pixels, which keeps deep zooms within what browsers allow. */
+const MAX_CANVAS_PIXELS = 16_000_000;
 
 export interface RenderOptions {
 	/** Use the dark page color and invert ink, as PencilKit does in dark mode. */
@@ -30,16 +32,7 @@ export function renderDrawing(container: HTMLElement, doc: DrawingDocument, opti
 	const dark = options.dark && !doc.pdf;
 	const { color: pageColor } = parseColor(dark ? doc.paper.color.dark : doc.paper.color.light);
 
-	const observer = options.pdf
-		? new IntersectionObserver((entries) => {
-				for (const entry of entries) {
-					if (!entry.isIntersecting) continue;
-					observer?.unobserve(entry.target);
-					const index = Number((entry.target as HTMLElement).dataset.page);
-					void renderPdfPage(options.pdf!, index, entry.target as HTMLElement);
-				}
-			}, { rootMargin: "200px" })
-		: undefined;
+	const pdfPages = options.pdf ? new PdfPages(options.pdf) : undefined;
 
 	doc.pages.forEach((page, i) => {
 		const shapes = page.strokes.map(strokeShape).filter((s): s is StrokeShape => s !== null);
@@ -59,12 +52,13 @@ export function renderDrawing(container: HTMLElement, doc: DrawingDocument, opti
 			viewBox = [0, 0, size.width, size.height];
 		}
 		pageEl.style.aspectRatio = `${viewBox[2]} / ${viewBox[3]}`;
-		pageEl.style.maxWidth = `${Math.ceil(viewBox[2])}px`;
+		// The widest the page gets before zooming: see styles.css.
+		pageEl.style.setProperty("--obsididraw-page-width", `${Math.ceil(viewBox[2])}px`);
 
 		if (options.pdf && i < options.pdf.numPages) {
 			const pdfEl = pageEl.createDiv({ cls: "obsididraw-pdf-page" });
 			pdfEl.dataset.page = String(i + 1);
-			observer?.observe(pdfEl);
+			pdfPages?.add(pdfEl);
 		}
 
 		// Separate from the ink, which is inverted as a whole in dark themes.
@@ -108,17 +102,66 @@ function renderShape(shape: StrokeShape, defs: SVGDefsElement): SVGPathElement {
 	return path;
 }
 
-async function renderPdfPage(pdf: PdfJsDocument, pageNumber: number, el: HTMLElement) {
-	const page = await pdf.getPage(pageNumber);
-	const base = page.getViewport({ scale: 1 });
-	// Render at the element's on-screen size, so text stays sharp.
-	const scale = Math.max(el.clientWidth / base.width, 1) * (window.devicePixelRatio || 1);
-	const viewport = page.getViewport({ scale });
-	const canvas = el.createEl("canvas");
-	canvas.width = Math.ceil(viewport.width);
-	canvas.height = Math.ceil(viewport.height);
-	const ctx = canvas.getContext("2d");
-	if (ctx) await page.render({ canvasContext: ctx, viewport }).promise;
+/**
+ * Draws background PDF pages once they scroll into view, and again once they've been zoomed well
+ * past the resolution they were drawn at.
+ */
+class PdfPages {
+	private readonly visible = new Set<HTMLElement>();
+	/** The scale each page was last drawn at, or is being drawn at. */
+	private readonly scales = new WeakMap<HTMLElement, number>();
+	private timer = 0;
+
+	private readonly intersections = new IntersectionObserver(
+		(entries) => {
+			for (const entry of entries) {
+				const el = entry.target as HTMLElement;
+				if (entry.isIntersecting) {
+					this.visible.add(el);
+					void this.draw(el);
+				} else {
+					this.visible.delete(el);
+				}
+			}
+		},
+		{ rootMargin: "200px" },
+	);
+
+	/** Pages change size with the zoom; wait for it to settle before drawing them again. */
+	private readonly resizes = new ResizeObserver(() => {
+		window.clearTimeout(this.timer);
+		this.timer = window.setTimeout(() => this.visible.forEach((el) => void this.draw(el)), 150);
+	});
+
+	constructor(private readonly pdf: PdfJsDocument) {}
+
+	add(el: HTMLElement) {
+		this.intersections.observe(el);
+		this.resizes.observe(el);
+	}
+
+	private async draw(el: HTMLElement) {
+		if (!el.isConnected) {
+			this.visible.delete(el);
+			return;
+		}
+		const page = await this.pdf.getPage(Number(el.dataset.page));
+		const base = page.getViewport({ scale: 1 });
+		// Draw at the element's on-screen size, so text stays sharp.
+		const wanted = Math.max(el.clientWidth / base.width, 1) * (window.devicePixelRatio || 1);
+		const scale = Math.min(wanted, Math.sqrt(MAX_CANVAS_PIXELS / (base.width * base.height)));
+		if (scale <= (this.scales.get(el) ?? 0) * 1.2) return;
+		this.scales.set(el, scale);
+
+		const viewport = page.getViewport({ scale });
+		const canvas = createEl("canvas");
+		canvas.width = Math.ceil(viewport.width);
+		canvas.height = Math.ceil(viewport.height);
+		const ctx = canvas.getContext("2d");
+		if (ctx) await page.render({ canvasContext: ctx, viewport }).promise;
+		// Unless a sharper drawing was started meanwhile, which then takes the page over instead.
+		if (this.scales.get(el) === scale) el.replaceChildren(canvas);
+	}
 }
 
 function svgEl<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string>): SVGElementTagNameMap[K] {

@@ -106,6 +106,14 @@ final class DrawingSession {
         replaceDocument(reloadsCanvas: false) { $0.addPage() }
     }
 
+    /// Removes a page and its ink. Taking a blank page off the end moves no ink, so the canvas
+    /// keeps its strokes and undo history; anything else reloads it.
+    func deletePage(at index: Int) {
+        guard let document = currentDocument, document.canDeletePages, document.pageSizes.indices.contains(index) else { return }
+        let movesInk = index < document.pageSizes.count - 1 || document.pageHasInk(at: index)
+        replaceDocument(reloadsCanvas: movesInk) { $0.deletePage(at: index) }
+    }
+
     private func replaceDocument(reloadsCanvas: Bool = true, _ change: (inout EditorDocument) -> Void) {
         guard var document = currentDocument else { return }
         change(&document)

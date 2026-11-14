@@ -65,23 +65,46 @@ enum ShapeKind: String, CaseIterable, Identifiable {
         }
     }
 
+    /// How wide PencilKit paints a shape drawn with `tool`: as wide as a steady stroke of its own.
+    static func lineWidth(of tool: PKInkingTool) -> CGFloat {
+        InkWidth.painted(size: InkWidth.size(forWidth: tool.width, ink: tool.inkType), ink: tool.inkType)
+    }
+
     func strokes(from start: CGPoint, to end: CGPoint, tool: PKInkingTool) -> [PKStroke] {
         let size = InkWidth.size(forWidth: tool.width, ink: tool.inkType)
-        return polylines(from: start, to: end, lineWidth: tool.width).map { polyline in
-            let points = Self.resampled(polyline).enumerated().map { i, location in
+        return polylines(from: start, to: end, lineWidth: Self.lineWidth(of: tool)).map { polyline in
+            let locations = Self.resampled(polyline)
+            let azimuths = Self.azimuths(along: locations, ink: tool.inkType)
+            let points = locations.indices.map { i in
                 PKStrokePoint(
-                    location: location,
+                    location: locations[i],
                     timeOffset: TimeInterval(i) * 0.008,
                     size: CGSize(width: size, height: size),
                     opacity: 1,
                     force: 1,
-                    azimuth: 0,
+                    azimuth: azimuths[i],
                     altitude: .pi / 2,
                     secondaryScale: 1
                 )
             }
             return PKStroke(ink: tool.ink, path: PKStrokePath(controlPoints: points, creationDate: Date()), transform: .identity, mask: nil)
         }
+    }
+
+    /// The direction the tip leans at each point. As in strokes PencilKit makes from a finger, it
+    /// stays square to the direction of travel, which keeps the marker's broad tip, and so the
+    /// shape, equally thick on every side. The fountain pen's nib holds one angle instead. Angles
+    /// carry on past a full turn rather than wrapping, so the tip takes the short way round corners.
+    private static func azimuths(along points: [CGPoint], ink: PKInk.InkType) -> [CGFloat] {
+        guard ink != .fountainPen else { return Array(repeating: 0, count: points.count) }
+        var azimuths: [CGFloat] = []
+        for i in points.indices {
+            let before = points[max(i - 1, 0)], after = points[min(i + 1, points.count - 1)]
+            var azimuth = atan2(after.y - before.y, after.x - before.x) + .pi / 2
+            if let last = azimuths.last { azimuth = last + (azimuth - last).remainder(dividingBy: 2 * .pi) }
+            azimuths.append(azimuth)
+        }
+        return azimuths
     }
 
     /// Spacing of a shape's control points. Strokes are B-splines, so this keeps corners tight:

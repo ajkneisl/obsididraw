@@ -21,6 +21,7 @@ import { exportToPdf } from "./export";
 import { DrawingDocument, EXTENSION, PAPER_PRESETS, blankDrawing, parseDrawing } from "./format";
 import { PdfJsDocument, renderDrawing } from "./render";
 import { saveWithPrompt } from "./save";
+import { PageZoom } from "./zoom";
 
 const VIEW_TYPE = "obsididraw-view";
 
@@ -74,6 +75,10 @@ export default class ObsididrawPlugin extends Plugin {
 				return true;
 			},
 		});
+
+		this.addZoomCommand("zoom-in", "Zoom in", (zoom) => zoom.step(1));
+		this.addZoomCommand("zoom-out", "Zoom out", (zoom) => zoom.step(-1));
+		this.addZoomCommand("zoom-reset", "Reset zoom", (zoom) => zoom.reset());
 
 		this.addCommand({
 			id: "create-drawing-at-cursor",
@@ -137,6 +142,20 @@ export default class ObsididrawPlugin extends Plugin {
 		for (const embed of this.embeds) {
 			if (!file || embed.file === file) void embed.loadFile();
 		}
+	}
+
+	/** A command that changes the zoom of the drawing view in front. */
+	private addZoomCommand(id: string, name: string, change: (zoom: PageZoom) => void) {
+		this.addCommand({
+			id,
+			name,
+			checkCallback: (checking) => {
+				const view = this.app.workspace.getActiveViewOfType(DrawingView);
+				if (!view) return false;
+				if (!checking) change(view.zoom);
+				return true;
+			},
+		});
 	}
 
 	/** Reads, parses and renders `file` into `el`, replacing its contents. */
@@ -277,11 +296,16 @@ class DrawingEmbed extends MarkdownRenderChild {
 }
 
 class DrawingView extends FileView {
+	readonly zoom: PageZoom;
+
 	constructor(
 		leaf: WorkspaceLeaf,
 		private plugin: ObsididrawPlugin,
 	) {
 		super(leaf);
+		this.zoom = new PageZoom(this.contentEl, this);
+		this.addAction("zoom-in", "Zoom in", () => this.zoom.step(1));
+		this.addAction("zoom-out", "Zoom out", () => this.zoom.step(-1));
 		this.addAction("file-down", "Export to PDF", () => {
 			if (this.file) void plugin.exportPdf(this.file);
 		});
@@ -308,6 +332,7 @@ class DrawingView extends FileView {
 
 	async onLoadFile(file: TFile) {
 		this.contentEl.addClass("obsididraw-view");
+		this.zoom.reset();
 		await this.render();
 	}
 
@@ -316,7 +341,11 @@ class DrawingView extends FileView {
 	}
 
 	async render() {
-		if (this.file) await this.plugin.renderInto(this.contentEl, this.file);
+		if (!this.file) return;
+		// Rendering replaces the pages, as when the file changes underneath; stay where we were.
+		const { scrollLeft, scrollTop } = this.contentEl;
+		await this.plugin.renderInto(this.contentEl, this.file);
+		this.contentEl.scrollTo(scrollLeft, scrollTop);
 	}
 }
 

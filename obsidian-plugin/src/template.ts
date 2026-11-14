@@ -27,12 +27,14 @@ function steps(from: number, end: number, step: number, through = false): number
 export function templatePath(template: string | undefined, width: number, height: number, continuous: boolean): string {
 	const parts: string[] = [];
 	const lastRule = continuous ? height : height - SPACING;
+	// Compact templates fit a second rule between each pair.
+	const ruleSpacing = template?.endsWith("Compact") ? SPACING / 2 : SPACING;
 
 	const rect = (x: number, y: number, w: number, h: number) =>
 		parts.push(`M${fmt(x)} ${fmt(y)}L${fmt(x + w)} ${fmt(y)}L${fmt(x + w)} ${fmt(y + h)}L${fmt(x)} ${fmt(y + h)}Z`);
 	const rule = (x0: number, x1: number, y: number) => rect(x0, y - THICKNESS / 2, x1 - x0, THICKNESS);
 	const divider = (x: number, y0: number, y1: number) => rect(x - THICKNESS / 2, y0, THICKNESS, y1 - y0);
-	const rules = (x0: number, x1: number, bottom: number) => steps(TOP, bottom, SPACING, true).forEach((y) => rule(x0, x1, y));
+	const rules = (x0: number, x1: number, bottom: number) => steps(TOP, bottom, ruleSpacing, true).forEach((y) => rule(x0, x1, y));
 	const panes = (count: number) => {
 		const columnWidth = (width - MARGIN * 2 - GUTTER * (count - 1)) / count;
 		if (columnWidth <= 0) return;
@@ -45,6 +47,7 @@ export function templatePath(template: string | undefined, width: number, height
 
 	switch (template) {
 		case "lined":
+		case "linedCompact":
 			rules(0, width, lastRule);
 			break;
 		case "squares":
@@ -70,9 +73,11 @@ export function templatePath(template: string | undefined, width: number, height
 			break;
 		}
 		case "twoPaneLined":
+		case "twoPaneLinedCompact":
 			panes(2);
 			break;
 		case "threePaneLined":
+		case "threePaneLinedCompact":
 			panes(3);
 			break;
 	}

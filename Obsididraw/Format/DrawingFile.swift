@@ -151,10 +151,10 @@ extension DrawingFile.Stroke {
 }
 
 extension PKStroke {
+    /// A new stroke, not a copy with its transform changed: a copy keeps the stroke's identity, and
+    /// a canvas handed a drawing that moved strokes it already has doesn't repaint them.
     func translated(by dx: CGFloat, _ dy: CGFloat) -> PKStroke {
-        var stroke = self
-        stroke.transform = transform.concatenating(CGAffineTransform(translationX: dx, y: dy))
-        return stroke
+        PKStroke(ink: ink, path: path, transform: transform.concatenating(CGAffineTransform(translationX: dx, y: dy)), mask: mask, randomSeed: randomSeed)
     }
 }
 
@@ -192,13 +192,32 @@ nonisolated enum InkWidth {
         }
     }
 
-    /// The `size` that makes PencilKit draw `ink` `width` points wide.
+    /// The `size` PencilKit gives the points of a steady stroke made without pressure, as with a
+    /// finger or a pointer, by a tool `width` wide. A tool's width isn't how wide it draws.
     static func size(forWidth width: CGFloat, ink: PKInk.InkType) -> CGFloat {
         switch ink {
-        case .fountainPen: width + 2
-        case .pencil, .crayon, .watercolor: width / 2
-        case .marker: width
+        case .monoline, .fountainPen: width + 2
+        case .marker: width / 1.5
+        case .pencil: (7 * width + 24) / 34
+        case .watercolor: width / 3.0.squareRoot()
+        // Crayon sizes depend on the stroke's direction, from 0.6 to 1 × width.
+        case .crayon: width * 0.75
+        // The pen swells with pressure and speed. This is the size it rests at: a fit, to within
+        // 0.01, of what PencilKit produces across the pen's range of widths.
+        case .pen: 3 + pow(width / 25.66, 0.77)
+        // Inks this version doesn't know are taken to draw as wide as their tool.
         default: width / 2 + 2
+        }
+    }
+
+    /// How wide PencilKit paints a stroke of this `size` from edge to edge, across the broad side
+    /// of the inks that have one. For textured inks that's wider than `solid`.
+    static func painted(size: CGFloat, ink: PKInk.InkType) -> CGFloat {
+        switch ink {
+        case .marker: 1.5 * size
+        case .watercolor: 3.0.squareRoot() * size
+        case .pencil, .crayon: 2 * size
+        default: max(2 * (size - 2), 0)
         }
     }
 }

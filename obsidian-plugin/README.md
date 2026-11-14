@@ -3,6 +3,9 @@
 Displays and exports `.draw` drawings made with the Obsididraw app for iPad and Mac:
 
 - Opening a drawing in Obsidian shows it as a full view, page by page.
+- Zoom in on that view by pinching (touch screen or trackpad), with Ctrl/Cmd + scroll, with the
+  zoom buttons in its header, or with the **Zoom in**, **Zoom out** and **Reset zoom** commands,
+  which can be given hotkeys. Ink stays sharp at any zoom.
 - **Create drawing at cursor** (command palette, or right-click in a note → *Create drawing
   here*) creates a blank `Drawing <date>.draw` where Obsidian puts new attachments for that note,
   and embeds it at the cursor. Its page size comes from the plugin setting **Page size for new
@@ -19,8 +22,9 @@ Displays and exports `.draw` drawings made with the Obsididraw app for iPad and 
   palette. Like Obsidian's own export, it asks where to save: the system save dialog on desktop
   (starting in the drawing's folder), or a vault folder picker on mobile, after which the PDF
   opens. Ink is exported as vector shapes on the light page color.
-- Page templates set in the app (lined, squares, dots, Cornell notes, two and three pane lined)
-  show behind the ink and are included in exported PDFs.
+- Page templates set in the app (lined, squares, dots, Cornell notes, two and three pane lined,
+  and the compact versions of the lined ones) show behind the ink and are included in exported
+  PDFs.
 - Views and embeds refresh when the file changes, for example after a sync from the iPad.
 - Setting **Follow dark theme**: in dark themes, drawings use their dark page color and their
   ink is inverted, the way PencilKit does on iPad. PDFs always stay light.
